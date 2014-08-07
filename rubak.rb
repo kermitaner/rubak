@@ -165,14 +165,14 @@ ensure
   sleep 3
 end
 end
-
+#cd into script directory (including config file(s) )
+Dir.chdir(File.expand_path(File.dirname(__FILE__)))
 curDir=Dir.pwd							# save current working dir
 read_config(Kconfig,conf)		# read config data from file
 # generate filename for backup (tarball ) file
 s=Time.now.strftime("%Y%m%d-%H%M%S") 	#gen timestamp for file extension
 #(e.g.: BAK_20140805-140205.tgz)
 FN_BACKUP=conf[:backupFile]+s+'.tgz'
-
 
 logoutConfig(conf)					# log config data
 findPaths(conf)						# collect all directories/files
