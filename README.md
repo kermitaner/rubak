@@ -1,14 +1,14 @@
 rubak
 =====
 
- configurable ruby script to backup directories as zipped archives to ftp server (wth. exclude dirs / files option)
- read rubak.conf for configuration options
- intended to be run as cron job on server to backup directories to remote ftp server
+ configurable ruby script to backup directories as zipped archives to ftp server (wth. exclude dirs / files option)<br/>
+ read rubak.conf for configuration options<br/>
+ intended to be run as cron job on server to backup directories to remote ftp server<br/>
  
- further enhancements planned:  
- -add generation counter option to limit number  of existing backups on ftp server ( round robin)
- -add option to AES encrypt archive before upload, 
- -accept optional parameter as name for config.file
+ further enhancements planned:  <br/>
+ -add generation counter option to limit number  of existing backups on ftp server ( round robin)<br/>
+ -add option to AES encrypt archive before upload, <br/>
+ -accept optional parameter as name for config.file<br/>
  
  pre production status, use on own risk !!
  
