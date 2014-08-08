@@ -1,6 +1,6 @@
 #! /usr/bin/env ruby
 
-$VERBOSE=true
+#$VERBOSE=true
 
 require 'zlib'
 require 'archive/tar/minitar'
@@ -21,7 +21,8 @@ conf={
 		exFiles: [],	#Files to exclude
 		saveDirs: [],	#Directories to backup
 		zipFiles: [],		#all files to zip & backup
-		backupFile: 'BAK_' # default backupfile name
+		backupFile: 'BAK_', # default backupfile name
+		backupSize: 0 		# filesize of archive
 		}
 
 #get value following  keyword ( and space(s) )
@@ -30,16 +31,19 @@ def getVal(line)
 end
 
 # zip all  files found into archive/tarball
-def make_tarball(destination, zipFiles)
+def make_tarball(destination, conf,curDir)
+	Dir.chdir(curDir)
   Zlib::GzipWriter.open(destination) do |gzip|
     out = Archive::Tar::Minitar::Output.new(gzip)
-	 zipFiles.each { |f|	Archive::Tar::Minitar.pack_file(f, out) }
+	 conf[:zipFiles].each { |f|	Archive::Tar::Minitar.pack_file(f, out) }
     out.close
-  end
+ end
+ conf[:backupSize]=File.size(destination) #remember archive size
 end
 
 #read data from config file into "conf" hash
-def read_config(fi,conf)
+def read_config(fi,conf,curDir)
+	Dir.chdir curDir
 	bDirs=bFiles=false
 	IO.readlines(fi).each do |line|
 		line.chomp!
@@ -63,11 +67,11 @@ def read_config(fi,conf)
 		elsif line=~/^-backupFile/i
 			conf[:backupFile]=getVal(line)
 		elsif bDirs
-			conf[:exDirs]<<line
+			conf[:exDirs]<< line
 		elsif	bFiles
-			conf[:exFiles]<<line
+			conf[:exFiles]<< line
 		else
-			conf[:saveDirs]<<line
+			conf[:saveDirs]<< line
 		end
 	end
 end
@@ -96,8 +100,8 @@ def getFiles (conf)
 		f=File.expand_path(f)			# get complete path for file
 
 		if File.directory?(f)
-      #add empty dir even when excluded
-      conf[:zipFiles]<< f
+			#add excluded dir as empty folder only
+			conf[:zipFiles]<< f
 			next if exclude(f,conf[:exDirs])
 			Dir.chdir(f)
 			getFiles(conf)	# explore subdir
@@ -128,11 +132,19 @@ if conf[:server]
 	print "\nupload to server: "+conf[:server]
 	puts '/'+conf[:ftpDir] if conf[:ftpDir]
 end
+STDOUT.flush
 end
 
-def logoutResult(curDir,zipFiles)
-	puts "\n"+zipFiles.size.to_s+" Files written to: \n#{curDir}/#{FN_BACKUP}"
-	puts "\nFilesize: "+(File.size(FN_BACKUP)/1024).to_s+' KB'
+def logoutResult(curDir,conf)
+	puts "\n"+conf[:zipFiles].size.to_s+" Files written to: \n"
+	if conf[:server]
+		print conf[:server]
+		print '/'+conf[:ftpDir]+'/' if conf[:ftpDir]
+	else
+		print curDir+ '/'
+   end
+	puts FN_BACKUP
+	puts "\nFilesize: "+(conf[:backupSize]/1024).to_s+' KB'
 end
 
 # simple (binary ) file upload
@@ -164,20 +176,30 @@ ensure
   GC.start
   sleep 3
 end
+	File.delete(file)
+	puts 'deleted local file: '+file
 end
-#cd into script directory (including config file(s) )
-Dir.chdir(File.expand_path(File.dirname(__FILE__)))
-curDir=Dir.pwd							# save current working dir
-read_config(Kconfig,conf)		# read config data from file
-# generate filename for backup (tarball ) file
+def genArchivename(conf)
+	# generate filename for backup (tarball ) file
 s=Time.now.strftime("%Y%m%d-%H%M%S") 	#gen timestamp for file extension
 #(e.g.: BAK_20140805-140205.tgz)
-FN_BACKUP=conf[:backupFile]+s+'.tgz'
+return conf[:backupFile]+s+'.tgz'
+end
+#++++++  start script ++++++++++++
+t0=Time.now
+puts 'Start: '+ t0.to_s
+curDir=File.expand_path(File.dirname(__FILE__)) # save current working dir
+
+read_config(Kconfig,conf,curDir)		# read config data from file into hash
+FN_BACKUP=genArchivename(conf)
 
 logoutConfig(conf)					# log config data
+
 findPaths(conf)						# collect all directories/files
 
-Dir.chdir(curDir)
-make_tarball(FN_BACKUP,conf[:zipFiles])		# create  archive
+make_tarball(FN_BACKUP,conf,curDir)		# create  archive
+
 upload(FN_BACKUP,conf)	if conf[:server]		#upload backup archive
-logoutResult(curDir,conf[:zipFiles])
+
+logoutResult(curDir,conf)
+puts 'finished, runtime: '+ (Time.now-t0).to_s+' sec'
