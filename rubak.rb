@@ -11,7 +11,7 @@ include Archive::Tar
 # filename config file
 Kconfig='rubak.conf'
 
-#hash with data read from config file
+#hash with default data , overwrite with data from config file
 conf={
 		server: nil, #address ftp server
 		user: nil, 	#ftp user
@@ -22,7 +22,8 @@ conf={
 		saveDirs: [],	#Directories to backup
 		zipFiles: [],		#all files to zip & backup
 		backupFile: 'BAK_', # default backupfile name
-		backupSize: 0 		# filesize of archive
+		backupSize: 0, 		# created filesize of archive(readonly)
+    generations: 99  #default 99 generations of backups
 		}
 
 #get value following  keyword ( and space(s) )
@@ -66,6 +67,13 @@ def read_config(fi,conf,curDir)
 			conf[:ftpDir]=getVal(line)
 		elsif line=~/^-backupFile/i
 			conf[:backupFile]=getVal(line)
+    elsif line=~/^-generations/i
+			conf[:generations]=getVal(line).to_i
+      unless conf[:generations]>0
+        puts 'error in config: generations must be > 0 !'
+        puts line
+        exit 1
+    end
 		elsif bDirs
 			conf[:exDirs]<< line
 		elsif	bFiles
@@ -132,6 +140,9 @@ if conf[:server]
 	print "\nupload to server: "+conf[:server]
 	puts '/'+conf[:ftpDir] if conf[:ftpDir]
 end
+if conf[:generations]
+	puts "\keeping max #{conf[:generations]} generations "
+end
 STDOUT.flush
 end
 
@@ -166,6 +177,7 @@ begin
   timeout( transfer_timeout ) do
 	  ftp.chdir(conf[:ftpDir])
     ftp.putbinaryfile( file )
+     ftpCleanUp(conf,ftp) if conf[:generations]
   end
 		puts "upload finished"
 rescue
@@ -179,11 +191,37 @@ end
 	File.delete(file)
 	puts 'deleted local file: '+file
 end
+def ftpCleanUp(conf,ftp)
+    limit=conf[:generations]
+  #must match generated archive names
+  a=ftp.nlst(conf[:backupFile]+'????????-??????.tgz')
+  a.each do |e| puts e end
+  return if a.size<= limit
+  while (a.size> limit)
+     ftp.delete(a[0])
+      puts 'Deleted old archive: '+a[0]
+      a.delete_at(0)
+  end
+end
+
 def genArchivename(conf)
 	# generate filename for backup (tarball ) file
 s=Time.now.strftime("%Y%m%d-%H%M%S") 	#gen timestamp for file extension
 #(e.g.: BAK_20140805-140205.tgz)
 return conf[:backupFile]+s+'.tgz'
+end
+def cleanUp(conf)
+  limit=conf[:generations]
+  return unless limit
+  #must match generated archive names
+  a=Dir[conf[:backupFile]+'????????-??????.tgz']  
+  a.each do |e| puts e end
+  return if a.size<= limit
+  while (a.size> limit)
+      File.delete(a[0])
+      puts 'Deleted old archive: '+a[0]
+      a.delete_at(0)
+  end
 end
 #++++++  start script ++++++++++++
 t0=Time.now
@@ -194,12 +232,11 @@ read_config(Kconfig,conf,curDir)		# read config data from file into hash
 FN_BACKUP=genArchivename(conf)
 
 logoutConfig(conf)					# log config data
-
 findPaths(conf)						# collect all directories/files
 
 make_tarball(FN_BACKUP,conf,curDir)		# create  archive
 
 upload(FN_BACKUP,conf)	if conf[:server]		#upload backup archive
-
+cleanUp(conf) unless conf[:server]
 logoutResult(curDir,conf)
 puts 'finished, runtime: '+ (Time.now-t0).to_s+' sec'
