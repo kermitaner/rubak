@@ -194,7 +194,7 @@ end
 def ftpCleanUp(conf,ftp)
     limit=conf[:generations]
   #must match generated archive names
-  a=ftp.nlst(conf[:backupFile]+'????????-??????.tgz')
+  a=ftp.nlst(conf[:backupFile]+'????????-??????.tgz').sort	
   a.each do |e| puts e end
   return if a.size<= limit
   while (a.size> limit)
@@ -214,7 +214,7 @@ def cleanUp(conf)
   limit=conf[:generations]
   return unless limit
   #must match generated archive names
-  a=Dir[conf[:backupFile]+'????????-??????.tgz']  
+  a=Dir[conf[:backupFile]+'????????-??????.tgz'].sort  
   a.each do |e| puts e end
   return if a.size<= limit
   while (a.size> limit)
