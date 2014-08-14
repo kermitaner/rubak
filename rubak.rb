@@ -2,14 +2,20 @@
 
 #$VERBOSE=true
 
-require 'zlib'
-require 'archive/tar/minitar'
-require 'net/ftp'
-require 'timeout'
+require 'zlib'    # for archive compression
+require 'archive/tar/minitar' # for archive compression
+require 'net/ftp' # for ftp upload
+require 'timeout' # for ftp upload
+require 'openssl' # for file encryption
+
 include Archive::Tar
 
-# filename config file
+# filename of config file
 Kconfig='rubak.conf'
+#openssl constant
+MAGIC = 'Salted__'
+#temp file for aes enrcyption
+CRYPT_TMP='crypt.enc'
 
 #hash with default data , overwrite with data from config file
 conf={
@@ -23,11 +29,14 @@ conf={
 		zipFiles: [],		#all files to zip & backup
 		backupFile: 'BAK_', # default backupfile name
 		backupSize: 0, 		# created filesize of archive(readonly)
-    generations: 99  #default 99 generations of backups
+    generations: 99,  #default 99 generations of backups
+    passphrase: nil   # if set, archive will be aes-128-cbc encrypted by openssl
 		}
 
 #get value following  keyword ( and space(s) )
 def getVal(line)
+  # value must not include space !!
+  # eg. "-parm value"   -> match value only 
 	return line.match(/(^.+[ ]+)([^ ]+)/)[2]
 end
 
@@ -46,17 +55,16 @@ end
 def read_config(fi,conf,curDir)
 	Dir.chdir curDir
 	bDirs=bFiles=false
+  
 	IO.readlines(fi).each do |line|
 		line.chomp!
     line.strip!
-		next if line[0,1]=='#'	#comment line ?
-		next if line.empty?
+		next if line[0,1]=='#'  #comment line ?
+		next if line.empty?         # ignore empty lines
 		if line=~/^-exdirs/i
-			bDirs=true
-			bFiles=false
+			bDirs,bFiles=true, false
 		elsif line=~/^-exfiles/i
-			bFiles=true
-			bDirs=false
+			bFiles,bDirs=true, false
 		elsif line=~/^-server/i
 			conf[:server]=getVal(line)
 		elsif line=~/^-user/i
@@ -73,18 +81,28 @@ def read_config(fi,conf,curDir)
         puts 'error in config: generations must be > 0 !'
         puts line
         exit 1
-    end
+      end
+    elsif line=~/^-cryptpass/i
+      conf[:passphrase]=getVal(line)
+      if conf[:passphrase].size<8
+        puts 'error in config: cryptpass minimum length is 8 chars !'
+        puts line
+        exit 1
+      end
 		elsif bDirs
-			conf[:exDirs]<< line
+			conf[:exDirs]<< line # collect directories to exclude/(nclude empty only)
 		elsif	bFiles
-			conf[:exFiles]<< line
+			conf[:exFiles]<< line # collect file masks to exclude
 		else
-			conf[:saveDirs]<< line
+			conf[:saveDirs]<< line # collect directories to backup
 		end
 	end
 end
 
+#find directories from config to backup
 def findPaths (conf)
+  puts aktTime()+' collecting files...'
+  STDOUT.flush  #write out immediately
 	conf[:saveDirs].each do |d|
 		if File.directory?(d)
 			Dir.chdir(d)
@@ -103,16 +121,17 @@ def exclude(f, ex)
 end
 
 #recursively find all files/directories to backup
+# and add to hash (:zipfiles) array
 def getFiles (conf)
+  # include even .xxx ( dotted ) files 
 	(Dir.glob("*", File::FNM_DOTMATCH) - %w[. ..]).each do |f|
 		f=File.expand_path(f)			# get complete path for file
 
 		if File.directory?(f)
-			#add excluded dir as empty folder only
-			conf[:zipFiles]<< f
+      conf[:zipFiles]<< f   #add even excluded dir as empty folder only
 			next if exclude(f,conf[:exDirs])
 			Dir.chdir(f)
-			getFiles(conf)	# explore subdir
+			getFiles(conf)	# recursively explore subdir
 			Dir.chdir("..")
 		else
 			conf[:zipFiles]<< f unless exclude(f,conf[:exFiles])
@@ -120,6 +139,7 @@ def getFiles (conf)
 	end
 end
 
+# log config values ( except ftp credentials / ssl pass phrase)
 def logoutConfig(conf)
 	if conf[:saveDirs].empty?
 	puts "no Directories specified in #{Kconfig}"
@@ -143,9 +163,10 @@ end
 if conf[:generations]
 	puts "\keeping max #{conf[:generations]} generations "
 end
-STDOUT.flush
+
 end
 
+# logout result :-)
 def logoutResult(curDir,conf)
 	puts "\n"+conf[:zipFiles].size.to_s+" Files written to: \n"
 	if conf[:server]
@@ -173,13 +194,15 @@ begin
     ftp = Net::FTP.new( ftp_server )
     ftp.login( user, pass )
   end
-	puts "\nuploading file: "+file
+	puts "\n"+aktTime()+" uploading file: "+file
+  STDOUT.flush  #write out immediately
   timeout( transfer_timeout ) do
 	  ftp.chdir(conf[:ftpDir])
     ftp.putbinaryfile( file )
+    puts aktTime()+" upload finished"
      ftpCleanUp(conf,ftp) if conf[:generations]
   end
-		puts "upload finished"
+
 rescue
   STDERR.puts "Error ftp-transfer server: #{ftp_server}"
   raise
@@ -191,6 +214,8 @@ end
 	File.delete(file)
 	puts 'deleted local file: '+file
 end
+
+# delete oldest archive ( until config limit is reached )
 def ftpCleanUp(conf,ftp)
     limit=conf[:generations]
   #must match generated archive names
@@ -204,12 +229,16 @@ def ftpCleanUp(conf,ftp)
   end
 end
 
+#generate archive name 
 def genArchivename(conf)
-	# generate filename for backup (tarball ) file
+# generate filename for backup (tarball ) file
+# important for sort order !!  in cleanup method !!
 s=Time.now.strftime("%Y%m%d-%H%M%S") 	#gen timestamp for file extension
 #(e.g.: BAK_20140805-140205.tgz)
 return conf[:backupFile]+s+'.tgz'
 end
+
+#delete oldest archive
 def cleanUp(conf)
   limit=conf[:generations]
   return unless limit
@@ -223,7 +252,49 @@ def cleanUp(conf)
       a.delete_at(0)
   end
 end
-#++++++  start script ++++++++++++
+#format current time as string
+def aktTime()
+  (Time.now).strftime("%T")
+end
+
+# encrypt file with openssl aes-128-cbc method
+# decrypt with:
+# openssl enc -d -aes-128-cbc -k password -in infile -out outfile
+# ( from example found in ruby forum :-)
+def encryptFile(fileIn,conf)
+
+salt_len = 8
+buf=''
+password = conf[:passphrase]
+cipher = 'aes-128-cbc'
+puts aktTime()+' encrypting archive...'
+STDOUT.flush  #write out immediately
+salt= OpenSSL::Random::pseudo_bytes(salt_len)
+
+c = OpenSSL::Cipher::Cipher.new(cipher)
+c.encrypt
+#generate key + IV from given password
+c.pkcs5_keyivgen(password, salt, 1)
+File.open(CRYPT_TMP,'wb') do |fo|
+  
+  fo.write(MAGIC) #write magic string 
+  fo.write(salt)      #write 8 bytes random salt
+  File.open(fileIn,'rb') do |fi|
+    while fi.read(4096,buf)  
+      fo.write c.update(buf)
+    end
+    fo.write( c.final)
+  end
+end
+
+#overwrite archive with crypted archive
+puts aktTime()+' archive encrypted '
+File.rename(CRYPT_TMP,fileIn)
+end
+
+##############################
+#++++++  start of script ++++++++++++
+##############################
 t0=Time.now
 puts 'Start: '+ t0.to_s
 curDir=File.expand_path(File.dirname(__FILE__)) # save current working dir
@@ -235,8 +306,9 @@ logoutConfig(conf)					# log config data
 findPaths(conf)						# collect all directories/files
 
 make_tarball(FN_BACKUP,conf,curDir)		# create  archive
-
+encryptFile(FN_BACKUP,conf) if conf[:passphrase] # encrypt archive
 upload(FN_BACKUP,conf)	if conf[:server]		#upload backup archive
-cleanUp(conf) unless conf[:server]
+
+cleanUp(conf) unless conf[:server] # cleanup local archives unless ftp upload requested
 logoutResult(curDir,conf)
-puts 'finished, runtime: '+ (Time.now-t0).to_s+' sec'
+puts aktTime()+' finished, runtime: '+ (Time.now-t0).to_s+' sec'
