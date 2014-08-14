@@ -5,9 +5,15 @@ rubak
  read rubak.conf for configuration options<br/>
  intended to be run as cron job on server to backup directories to remote ftp server<br/>
  generations limit config  option (default 10) to limit number  of existing backups locally/ on ftp server <br/>
+ option to AES encrypt archive before upload <br/>
+ <b>make sure to remember password from conf file !! or Data will be lost !!</b><br/>
+ decrypt with openssl command line tool : <br/>
+ <pre>openssl enc -d -aes-128-cbc -k password -in infile -out outfile</pre>
+ 
+ <b>make sure, you can decrypt your backup correctly before using encryption !!</b>
  
  further enhancements planned:  <br/>
- -add option to AES encrypt archive before upload, <br/>
+
  -accept optional parameter as name for config.file<br/>
  
  pre production status, use on own risk !!
