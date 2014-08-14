@@ -16,7 +16,7 @@ rubak
 
  -accept optional parameter as name for config.file<br/>
  
- pre production status, use on own risk !!
+ pre production status, use at own risk !!
  
  eg. for crontab entry ( edit with crontab -e on server ): 
  <br>
