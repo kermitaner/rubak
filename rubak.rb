@@ -3,10 +3,11 @@
 #$VERBOSE=true
 
 require 'zlib'    # for archive compression
-require 'archive/tar/minitar' # for archive compression
+require 'minitar' # for archive compression
 require 'net/ftp' # for ftp upload
 require 'timeout' # for ftp upload
 require 'openssl' # for file encryption
+require 'digest'
 
 include Archive::Tar
 
@@ -17,11 +18,15 @@ MAGIC = 'Salted__'
 #temp file for aes enrcyption
 CRYPT_TMP='crypt.enc'
 
+# file contains md5 hash and filesize of last built archive
+FileMD5 = "rubak.md5"
+
 #hash with default data , overwrite with data from config file
 conf={
 		server: nil, #address ftp server
 		user: nil, 	#ftp user
 		pass: nil,	#ftp pass
+		port: 21,       #ftp port
 		ftpDir: nil,	# path on ftp server for backup file
 		exDirs: [],	#Directories to exclude
 		exFiles: [],	#Files to exclude
@@ -32,7 +37,22 @@ conf={
     generations: 99,  #default 99 generations of backups
     passphrase: nil   # if set, archive will be aes-128-cbc encrypted by openssl
 		}
+    
 
+# detect, if file has changed - different md5 hash or filesize
+# or no stats file found
+def check_change md5 , size
+
+    if File.exists?(FileMD5)
+      arr= IO.read(FileMD5).split(";")
+      return false if  ( arr[0] == md5 && arr[1].to_i == size   ) 
+    end
+   # update stats file with new md5 hash & size
+    IO.write(FileMD5, md5+";"+size.to_s)
+    puts "md5 stats file updated"
+    true # data changed
+ end 
+ 
 #get value following  keyword ( and space(s) )
 def getVal(line)
   # value must not include space !!
@@ -41,14 +61,19 @@ def getVal(line)
 end
 
 # zip all  files found into archive/tarball
+# return md5 hash of source files
 def make_tarball(destination, conf,curDir)
 	Dir.chdir(curDir)
+  md5=Digest::MD5.new  
   Zlib::GzipWriter.open(destination) do |gzip|
     out = Archive::Tar::Minitar::Output.new(gzip)
-	 conf[:zipFiles].each { |f|	Archive::Tar::Minitar.pack_file(f, out) }
+	 conf[:zipFiles].each { |f|	Archive::Tar::Minitar.pack_file(f, out) 
+        md5.update IO.binread(f)
+   }
     out.close
  end
  conf[:backupSize]=File.size(destination) #remember archive size
+ return md5.hexdigest
 end
 
 #read data from config file into "conf" hash
@@ -68,14 +93,16 @@ def read_config(fi,conf,curDir)
 		elsif line=~/^-server/i
 			conf[:server]=getVal(line)
 		elsif line=~/^-user/i
-			conf[:user]=getVal(line)
+			conf[:user]=getVal(line)		
+		elsif line=~/^-port/i
+			conf[:port]=getVal(line).to_i
 		elsif line=~/^-pass/i
 			conf[:pass]=getVal(line)
 		elsif line=~/^-ftpdir/i
 			conf[:ftpDir]=getVal(line)
 		elsif line=~/^-backupFile/i
 			conf[:backupFile]=getVal(line)
-    elsif line=~/^-generations/i
+         	  elsif line=~/^-generations/i
 			conf[:generations]=getVal(line).to_i
       unless conf[:generations]>0
         puts 'error in config: generations must be > 0 !'
@@ -83,20 +110,20 @@ def read_config(fi,conf,curDir)
         exit 1
       end
     elsif line=~/^-cryptpass/i
-      conf[:passphrase]=getVal(line)
-      if conf[:passphrase].size<8
-        puts 'error in config: cryptpass minimum length is 8 chars !'
-        puts line
-        exit 1
-      end
-		elsif bDirs
+	conf[:passphrase]=getVal(line)
+      	if conf[:passphrase].size<8
+        	puts 'error in config: cryptpass minimum length is 8 chars !'
+       	 	puts line
+        	exit 1
+       end
+    elsif bDirs
 			conf[:exDirs]<< line # collect directories to exclude/(nclude empty only)
-		elsif	bFiles
+    elsif bFiles
 			conf[:exFiles]<< line # collect file masks to exclude
-		else
+    else
 			conf[:saveDirs]<< line # collect directories to backup
-		end
-	end
+    end
+  end
 end
 
 #find directories from config to backup
@@ -157,8 +184,9 @@ puts "\nexcluding all Directories like:"
 	conf[:exDirs].each { |e|  puts e}
 end
 if conf[:server]
-	print "\nupload to server: "+conf[:server]
+	print "\nupload to server: "+conf[:server]+":"+conf[:port].to_s
 	puts '/'+conf[:ftpDir] if conf[:ftpDir]
+        puts ""
 end
 if conf[:generations]
 	puts "\keeping max #{conf[:generations]} generations "
@@ -170,7 +198,7 @@ end
 def logoutResult(curDir,conf)
 	puts "\n"+conf[:zipFiles].size.to_s+" Files written to: \n"
 	if conf[:server]
-		print conf[:server]
+		print conf[:server]+":"+conf[:port].to_s
 		print '/'+conf[:ftpDir]+'/' if conf[:ftpDir]
 	else
 		print curDir+ '/'
@@ -184,20 +212,21 @@ def upload(file,conf)
 ftp_server = conf[:server]
 user       = conf[:user]
 pass       = conf[:pass]
-
+fport       = conf[:port]
 con_timeout      = 30
 transfer_timeout = 600
 
 ftp = nil
 begin
-  timeout( con_timeout ) do
-    ftp = Net::FTP.new( ftp_server )
+  Timeout.timeout( con_timeout ) do
+    ftp = Net::FTP.new(  )
+    ftp.connect(ftp_server, port=fport)
     ftp.login( user, pass )
   end
 	puts "\n"+aktTime()+" uploading file: "+file
   STDOUT.flush  #write out immediately
-  timeout( transfer_timeout ) do
-	  ftp.chdir(conf[:ftpDir])
+  Timeout.timeout( transfer_timeout ) do
+	  ftp.chdir(conf[:ftpDir]) if conf[:ftpDir]
     ftp.putbinaryfile( file )
     puts aktTime()+" upload finished"
      ftpCleanUp(conf,ftp) if conf[:generations]
@@ -211,13 +240,13 @@ ensure
   GC.start
   sleep 3
 end
-	File.delete(file)
-	puts 'deleted local file: '+file
+
 end
 
 # delete oldest archive ( until config limit is reached )
 def ftpCleanUp(conf,ftp)
     limit=conf[:generations]
+  puts "Remote backup files:"
   #must match generated archive names
   a=ftp.nlst(conf[:backupFile]+'????????-??????.tgz').sort	
   a.each do |e| puts e end
@@ -305,10 +334,18 @@ FN_BACKUP=genArchivename(conf)
 logoutConfig(conf)					# log config data
 findPaths(conf)						# collect all directories/files
 
-make_tarball(FN_BACKUP,conf,curDir)		# create  archive
-encryptFile(FN_BACKUP,conf) if conf[:passphrase] # encrypt archive
-upload(FN_BACKUP,conf)	if conf[:server]		#upload backup archive
+m5 = make_tarball(FN_BACKUP,conf,curDir)		# create  archive
 
-cleanUp(conf) unless conf[:server] # cleanup local archives unless ftp upload requested
-logoutResult(curDir,conf)
+if check_change m5 ,  conf[:backupSize]  # has md5 checksum/size changed ?
+  puts "Data changed"
+  encryptFile(FN_BACKUP,conf) if conf[:passphrase] # encrypt archive
+  upload(FN_BACKUP,conf)	if conf[:server]		#upload backup archive
+
+  cleanUp(conf) unless conf[:server] # cleanup local archives unless ftp upload requested
+  logoutResult(curDir,conf)
+else
+  puts "no changes detected"
+end
+	File.delete(FN_BACKUP)
+	puts 'deleted local file: '+FN_BACKUP
 puts aktTime()+' finished, runtime: '+ (Time.now-t0).to_s+' sec'
