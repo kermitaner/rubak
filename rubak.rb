@@ -7,9 +7,7 @@ require 'minitar' # for archive compression
 require 'net/ftp' # for ftp upload
 require 'timeout' # for ftp upload
 require 'openssl' # for file encryption
-require 'digest'
-
-include Archive::Tar
+require 'digest' # for md5 hash
 
 # filename of config file
 Kconfig='rubak.conf'
@@ -18,8 +16,6 @@ MAGIC = 'Salted__'
 #temp file for aes enrcyption
 CRYPT_TMP='crypt.enc'
 
-# file contains md5 hash and filesize of last built archive
-FileMD5 = "rubak.md5"
 
 #hash with default data , overwrite with data from config file
 conf={
@@ -41,14 +37,19 @@ conf={
 
 # detect, if file has changed - different md5 hash or filesize
 # or no stats file found
-def check_change md5 , size
-
+def check_change conf
+    md5=Digest::MD5.new  
+    bin=IO.binread(FN_BACKUP)
+    # set proc id to zero, so md5 hash doesnt change
+    bin[3..5]= "\x00\x00\x00"
+    md5.update bin
+    size = conf[:backupSize] 
     if File.exists?(FileMD5)
       arr= IO.read(FileMD5).split(";")
-      return false if  ( arr[0] == md5 && arr[1].to_i == size   ) 
+      return false if  ( arr[0] == md5.hexdigest && arr[1].to_i ==  size ) 
     end
    # update stats file with new md5 hash & size
-    IO.write(FileMD5, md5+";"+size.to_s)
+    IO.write(FileMD5, md5.hexdigest+";"+size.to_s)
     puts "md5 stats file updated"
     true # data changed
  end 
@@ -64,16 +65,13 @@ end
 # return md5 hash of source files
 def make_tarball(destination, conf,curDir)
 	Dir.chdir(curDir)
-  md5=Digest::MD5.new  
-  Zlib::GzipWriter.open(destination) do |gzip|
-    out = Archive::Tar::Minitar::Output.new(gzip)
-	 conf[:zipFiles].each { |f|	Archive::Tar::Minitar.pack_file(f, out) 
-        md5.update IO.binread(f)
-   }
-    out.close
- end
+
+  gzip = Zlib::GzipWriter.new(File.open(destination, 'wb'))
+  tar = Minitar::Output.new(gzip)
+	 conf[:zipFiles].each { |f|	Minitar.pack_file(f, tar)    }
+  tar.close
+
  conf[:backupSize]=File.size(destination) #remember archive size
- return md5.hexdigest
 end
 
 #read data from config file into "conf" hash
@@ -332,11 +330,15 @@ read_config(Kconfig,conf,curDir)		# read config data from file into hash
 FN_BACKUP=genArchivename(conf)
 
 logoutConfig(conf)					# log config data
+
+# file contains md5 hash and filesize of last built archive
+FileMD5 = conf[:backupFile]+".md5"
+
 findPaths(conf)						# collect all directories/files
 
-m5 = make_tarball(FN_BACKUP,conf,curDir)		# create  archive
+make_tarball(FN_BACKUP,conf,curDir)		# create  archive
 
-if check_change m5 ,  conf[:backupSize]  # has md5 checksum/size changed ?
+if check_change  conf # has md5 checksum/size changed ?
   puts "Data changed"
   encryptFile(FN_BACKUP,conf) if conf[:passphrase] # encrypt archive
   upload(FN_BACKUP,conf)	if conf[:server]		#upload backup archive
