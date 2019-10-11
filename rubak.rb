@@ -10,7 +10,14 @@ require 'openssl' # for file encryption
 require 'digest' # for md5 hash
 
 # filename of config file
-Kconfig='rubak.conf'
+p ARGV
+unless ARGV[0]
+  puts "error: missing config file parameter:"
+  puts "example: (ruby) rubak.rb .rubak.conf "
+  exit 1
+end
+
+Kconfig=ARGV[0]
 #openssl constant
 MAGIC = 'Salted__'
 #temp file for aes enrcyption
@@ -41,7 +48,7 @@ def check_change conf
     md5=Digest::MD5.new  
     bin=IO.binread(FN_BACKUP)
     # set proc id to zero, so md5 hash doesnt change
-    bin[3..5]= "\x00\x00\x00"
+    bin[3..7]= "\x00\x00\x00\x00\x00"
     md5.update bin
     size = conf[:backupSize] 
     if File.exists?(FileMD5)
