@@ -8,6 +8,7 @@ require 'net/ftp' # for ftp upload
 require 'timeout' # for ftp upload
 require 'openssl' # for file encryption
 require 'digest' # for md5 hash
+#require 'FileUtils' # for file copy
 
 # filename of config file
 p ARGV
@@ -36,6 +37,7 @@ conf={
 		saveDirs: [],	#Directories to backup
 		zipFiles: [],		#all files to zip & backup
 		backupFile: 'BAK_', # default backupfile name
+    backupdDrive: nil, # drive and path where to save backup
 		backupSize: 0, 		# created filesize of archive(readonly)
     generations: 99,  #default 99 generations of backups
     passphrase: nil   # if set, archive will be aes-128-cbc encrypted by openssl
@@ -56,8 +58,7 @@ def check_change conf
       return false if  ( arr[0] == md5.hexdigest && arr[1].to_i ==  size ) 
     end
    # update stats file with new md5 hash & size
-    IO.write(FileMD5, md5.hexdigest+";"+size.to_s)
-    puts "md5 stats file updated"
+   md5_data = md5.hexdigest+";"+size.to_s
     true # data changed
  end 
  
@@ -105,6 +106,9 @@ def read_config(fi,conf,curDir)
 			conf[:pass]=getVal(line)
 		elsif line=~/^-ftpdir/i
 			conf[:ftpDir]=getVal(line)
+ 		elsif line=~/^-backupDrive/i
+			conf[:backupDrive]=getVal(line)
+
 		elsif line=~/^-backupFile/i
 			conf[:backupFile]=getVal(line)
          	  elsif line=~/^-generations/i
@@ -212,6 +216,21 @@ def logoutResult(curDir,conf)
 	puts "\nFilesize: "+(conf[:backupSize]/1024).to_s+' KB'
 end
 
+# copy backup file to drive
+def backup2Drive(src,conf)
+  dest = conf[:backupDrive]
+  dest = dest + "/" unless dest [-1] =~ /[\/\\]/
+  dest = dest + src
+  puts src
+  puts dest
+  FileUtils.mkdir_p(File.dirname(dest))
+  FileUtils.cp(src, dest)
+  puts aktTime()+" archive copied"
+  cleanUp(conf) if conf[:generations]
+  
+end
+
+
 # simple (binary ) file upload
 def upload(file,conf)
 ftp_server = conf[:server]
@@ -275,16 +294,20 @@ end
 #delete oldest archive
 def cleanUp(conf)
   limit=conf[:generations]
-  return unless limit
-  #must match generated archive names
-  a=Dir[conf[:backupFile]+'????????-??????.tgz'].sort  
-  a.each do |e| puts e end
-  return if a.size<= limit
-  while (a.size> limit)
-      File.delete(a[0])
-      puts 'Deleted old archive: '+a[0]
-      a.delete_at(0)
+  a=[]
+  Dir.chdir conf[:backupDrive] do
+    #must match generated archive names
+    a=Dir[conf[:backupFile]+'????????-??????.tgz'].sort  
   end
+    a.each do |e| puts e end
+    return if a.size<= limit
+    Dir.chdir conf[:backupDrive] do
+      while (a.size> limit)
+        File.delete(a[0])
+        puts 'Deleted old archive: '+a[0]
+        a.delete_at(0)
+      end
+    end
 end
 #format current time as string
 def aktTime()
@@ -332,7 +355,7 @@ end
 t0=Time.now
 puts 'Start: '+ t0.to_s
 curDir=File.expand_path(File.dirname(__FILE__)) # save current working dir
-
+ 
 read_config(Kconfig,conf,curDir)		# read config data from file into hash
 FN_BACKUP=genArchivename(conf)
 
@@ -340,19 +363,20 @@ logoutConfig(conf)					# log config data
 
 # file contains md5 hash and filesize of last built archive
 FileMD5 = conf[:backupFile]+".md5"
-
+md5_data = "" 
 findPaths(conf)						# collect all directories/files
 
 make_tarball(FN_BACKUP,conf,curDir)		# create  archive
-
 if check_change  conf # has md5 checksum/size changed ?
+ check_change  conf # has md5 checksum/size changed ?
   puts "Data changed"
   encryptFile(FN_BACKUP,conf) if conf[:passphrase] # encrypt archive
   upload(FN_BACKUP,conf)	if conf[:server]		#upload backup archive
-
-  cleanUp(conf) unless conf[:server] # cleanup local archives unless ftp upload requested
+  backup2Drive(FN_BACKUP,conf)	if conf[:backupDrive]		#upload backup archive
   logoutResult(curDir,conf)
-else
+  IO.write(FileMD5, md5_data ) # write stats file only on success
+  puts "md5 stats file updated"
+else test
   puts "no changes detected"
 end
 	File.delete(FN_BACKUP)
