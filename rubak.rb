@@ -8,6 +8,7 @@ require 'net/ftp' # for ftp upload
 require 'timeout' # for ftp upload
 require 'openssl' # for file encryption
 require 'digest' # for md5 hash
+require 'time'
 #require 'FileUtils' # for file copy
 
 # filename of config file
@@ -31,6 +32,8 @@ conf={
 		user: nil, 	#ftp user
 		pass: nil,	#ftp pass
 		port: 21,       #ftp port
+ 		modTS: Time.new(0),	#lates modification timestamp
+
 		ftpDir: nil,	# path on ftp server for backup file
 		exDirs: [],	#Directories to exclude
 		exFiles: [],	#Files to exclude
@@ -39,29 +42,20 @@ conf={
 		backupFile: 'BAK_', # default backupfile name
     backupdDrive: nil, # drive and path where to save backup
 		backupSize: 0, 		# created filesize of archive(readonly)
+    fsize: 0 , # sum of file size sourcefiles
     generations: 99,  #default 99 generations of backups
     passphrase: nil   # if set, archive will be aes-128-cbc encrypted by openssl
 		}
     
-
-# detect, if file has changed - different md5 hash or filesize
-# or no stats file found
-def check_change conf
-    md5=Digest::MD5.new  
-    bin=IO.binread(FN_BACKUP)
-    # set proc id to zero, so md5 hash doesnt change
-    bin[3..7]= "\x00\x00\x00\x00\x00"
-    md5.update bin
-    size = conf[:backupSize] 
-    if File.exists?(FileMD5)
-      arr= IO.read(FileMD5).split(";")
-      return false if  ( arr[0] == md5.hexdigest && arr[1].to_i ==  size ) 
-    end
-   # update stats file with new md5 hash & size
-   md5_data = md5.hexdigest+";"+size.to_s
-    true # data changed
- end 
- 
+#check if size or timestamp changed
+def check_change (conf, curDir)
+  Dir.chdir curDir
+  return true unless File.exist?(FileStats)
+  arr = IO.read(FileStats).split(",")
+  return true if arr[0].to_i != conf[:fsize]
+  return true if conf[:modTS ].to_i  > Time.parse(arr[1]).to_i 
+  false
+end
 #get value following  keyword ( and space(s) )
 def getVal(line)
   # value must not include space !!
@@ -70,7 +64,6 @@ def getVal(line)
 end
 
 # zip all  files found into archive/tarball
-# return md5 hash of source files
 def make_tarball(destination, conf,curDir)
 	Dir.chdir(curDir)
 
@@ -162,15 +155,21 @@ def getFiles (conf)
   # include even .xxx ( dotted ) files 
 	(Dir.glob("*", File::FNM_DOTMATCH) - %w[. ..]).each do |f|
 		f=File.expand_path(f)			# get complete path for file
-
+    ts = File.mtime(f)
 		if File.directory?(f)
+      conf[:fsize] += 1 #count dirs as size 1
       conf[:zipFiles]<< f   #add even excluded dir as empty folder only
 			next if exclude(f,conf[:exDirs])
+      conf[:modTS] = ts if ts > conf[:modTS]
 			Dir.chdir(f)
 			getFiles(conf)	# recursively explore subdir
 			Dir.chdir("..")
 		else
-			conf[:zipFiles]<< f unless exclude(f,conf[:exFiles])
+      next if exclude(f,conf[:exFiles])
+			conf[:zipFiles]<< f 
+      conf[:fsize] += File.size(f)
+      conf[:modTS] = ts if ts > conf[:modTS]
+
 		end
 	end
 end
@@ -361,24 +360,23 @@ FN_BACKUP=genArchivename(conf)
 
 logoutConfig(conf)					# log config data
 
-# file contains md5 hash and filesize of last built archive
-FileMD5 = conf[:backupFile]+".md5"
-md5_data = "" 
+# file contains last filesize + latest update timestamp
+FileStats = conf[:backupFile]+".stats"
+
 findPaths(conf)						# collect all directories/files
 
-make_tarball(FN_BACKUP,conf,curDir)		# create  archive
-if check_change  conf # has md5 checksum/size changed ?
- check_change  conf # has md5 checksum/size changed ?
+if check_change( conf, curDir) 
+  make_tarball(FN_BACKUP,conf,curDir)		# create  archive
   puts "Data changed"
   encryptFile(FN_BACKUP,conf) if conf[:passphrase] # encrypt archive
   upload(FN_BACKUP,conf)	if conf[:server]		#upload backup archive
   backup2Drive(FN_BACKUP,conf)	if conf[:backupDrive]		#upload backup archive
   logoutResult(curDir,conf)
-  IO.write(FileMD5, md5_data ) # write stats file only on success
-  puts "md5 stats file updated"
-else test
+  IO.write(FileStats, conf[:fsize].to_s+","+conf[:modTS].to_s ) # write stats file only on success
+  puts "stats file updated"
+  	File.delete(FN_BACKUP)
+	puts 'deleted local file: '+FN_BACKUP
+else 
   puts "no changes detected"
 end
-	File.delete(FN_BACKUP)
-	puts 'deleted local file: '+FN_BACKUP
 puts aktTime()+' finished, runtime: '+ (Time.now-t0).to_s+' sec'
